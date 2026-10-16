@@ -222,7 +222,9 @@ Employer creates multiple salary streams atomically. All streams succeed or all 
 
 **Returns:** `Vec<u64>` — list of new stream IDs in the same order as `params`
 
-**Errors:** Same per-stream validations as `create_stream`; panics if `params` is empty
+**Limit:** 50 streams per call
+
+**Errors:** Same per-stream validations as `create_stream`; panics if `params` is empty or contains more than 50 entries (E029)
 
 **Example:**
 ```bash
@@ -264,24 +266,19 @@ stellar contract invoke --id <STREAM_ID> --source <EMPLOYEE_KEY> --network testn
 
 ### `settle_stream`
 
-Finalize an Active stream after its configured `stop_time` has been reached. Anyone may call this; no employee authorization is required. Any claimable tokens are paid to the current stream receipt holder, and the stream transitions to `Exhausted`. Any unstreamed deposit remaining after `stop_time` is not claimable.
-
-**Caller:** Anyone
+Anyone may finalize an Active stream after its `stop_time` is reached. Any remaining
+claimable tokens are transferred to the current stream receipt holder, then the
+stream transitions to `Exhausted` and emits a `status` event. No caller authorization
+is required.
 
 | Parameter | Type | Description |
 |---|---|---|
 | `stream_id` | `u64` | ID of the stream to settle |
 
-**Returns:** nothing
-
-**Events:** Emits `withdraw` if tokens are paid, followed by the generic `status` event with `Exhausted`.
-
 **Errors:**
-- Panics if stream not found
-- Panics if stream is not Active
-- Panics if `stop_time` is zero or has not been reached
-- E003 if a reentrant settlement is detected
-- E004 if claimable amount arithmetic overflows
+- Panics if the stream is not found
+- Panics if the stream is not Active
+- Panics if `stop_time` is unset or has not been reached
 
 **Example:**
 ```bash
@@ -317,6 +314,8 @@ stellar contract invoke --id <STREAM_ID> --source <EMPLOYEE_KEY> --network testn
 
 ---
 
+### `top_up`
+
 Employer adds more funds to an active stream.
 
 **Caller:** Employer
@@ -341,6 +340,35 @@ Employer adds more funds to an active stream.
 ```bash
 stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testnet \
   -- top_up --employer <EMPLOYER_ADDRESS> --stream_id 1 --amount 500000
+```
+
+---
+
+### `set_low_balance_threshold`
+
+Employer updates the low-balance alert threshold for a stream at any time without topping up. Setting the threshold to `0` disables the alert.
+
+**Caller:** Employer
+
+| Parameter | Type | Description |
+|---|---|---|
+| `employer` | `Address` | Must match the stream's employer (requires auth) |
+| `stream_id` | `u64` | ID of the stream to update |
+| `threshold` | `i128` | New alert threshold in deposit tokens (≥ 0; 0 disables alert) |
+
+**Returns:** nothing
+
+**Errors:**
+- Panics if stream not found (E015)
+- Panics if caller is not the stream's employer (E018)
+- E005 if stream is Cancelled
+- E006 if stream is Exhausted
+- Panics if `threshold` < 0
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testnet \
+  -- set_low_balance_threshold --employer <EMPLOYER_ADDRESS> --stream_id 1 --threshold 500000
 ```
 
 ---
@@ -392,9 +420,36 @@ Employer revokes a stream's recurring top-up authorization.
 
 ---
 
-### `get_auto_topup`
+### `get_auto_topup_config`
 
-Returns `Option<AutoTopupConfig>` (`trigger_threshold`, `topup_amount`, `max_total`, `total_topped_up`) for the stream.
+Query the recurring auto top-up configuration for a stream. Used by off-chain dashboards to display auto top-up status.
+
+**Caller:** Anyone (no auth required)
+
+| Parameter | Type | Description |
+|---|---|---|
+| `stream_id` | `u64` | ID of the stream |
+
+**Returns:** `Option<AutoTopupConfig>` — `Some(AutoTopupConfig)` if configured, or `None` if no auto top-up is set for the stream.
+
+**`AutoTopupConfig` fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `trigger_threshold` | `i128` | Remaining deposit threshold below which an auto top-up is triggered |
+| `topup_amount` | `i128` | Amount pulled from the employer per top-up |
+| `max_total` | `i128` | Lifetime cap on cumulative auto top-up transfers |
+| `total_topped_up` | `i128` | Cumulative tokens deposited via auto top-up so far |
+
+**Errors:** None (returns `None` if stream has no config or does not exist)
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
+  -- get_auto_topup_config --stream_id 1
+```
+
+*(Note: `get_auto_topup` is also supported as an alias.)*
 
 ---
 
@@ -424,6 +479,33 @@ stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testn
 
 ---
 
+### `pause_stream_batch`
+
+Employer pauses multiple Active streams atomically. The call reverts entirely if
+any stream is missing, belongs to another employer, or is not Active. A `status`
+event is emitted for each stream on success.
+
+**Caller:** Employer
+
+| Parameter | Type | Description |
+|---|---|---|
+| `employer` | `Address` | Must own every stream (requires auth once) |
+| `stream_ids` | `Vec<u64>` | IDs of 1–50 streams to pause |
+
+**Returns:** nothing
+
+**Errors:**
+- Panics if `stream_ids` is empty or contains more than 50 entries (E029)
+- Panics if any stream is not found, does not belong to `employer`, or is not Active
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testnet \
+  -- pause_stream_batch --employer <EMPLOYER_ADDRESS> --stream_ids '[1,2,3]'
+```
+
+---
+
 ### `resume_stream`
 
 Employer resumes a paused stream. The `last_withdraw_time` is reset to now so paused time is excluded from accrual.
@@ -446,6 +528,34 @@ Employer resumes a paused stream. The `last_withdraw_time` is reset to now so pa
 ```bash
 stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testnet \
   -- resume_stream --employer <EMPLOYER_ADDRESS> --stream_id 1
+```
+
+---
+
+### `resume_stream_batch`
+
+Employer resumes multiple Paused streams atomically. The call reverts entirely if
+any stream is missing, belongs to another employer, or is not Paused. Each
+stream's accrual clock restarts at the current ledger timestamp, and a `status`
+event is emitted for each stream.
+
+**Caller:** Employer
+
+| Parameter | Type | Description |
+|---|---|---|
+| `employer` | `Address` | Must own every stream (requires auth once) |
+| `stream_ids` | `Vec<u64>` | IDs of 1–50 streams to resume |
+
+**Returns:** nothing
+
+**Errors:**
+- Panics if `stream_ids` is empty or contains more than 50 entries (E029)
+- Panics if any stream is not found, does not belong to `employer`, or is not Paused
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testnet \
+  -- resume_stream_batch --employer <EMPLOYER_ADDRESS> --stream_ids '[1,2,3]'
 ```
 
 ---
@@ -520,12 +630,13 @@ Employer cancels multiple streams atomically in a single transaction. All cancel
 | Parameter | Type | Description |
 |---|---|---|
 | `employer` | `Address` | Must own every stream in the list (requires auth once) |
-| `stream_ids` | `Vec<u64>` | IDs of streams to cancel; must not be empty |
+| `stream_ids` | `Vec<u64>` | IDs of 1–50 streams to cancel |
 
 **Returns:** nothing
 
 **Errors:**
 - Panics if `stream_ids` is empty
+- Panics with E029 if `stream_ids` contains more than 50 entries
 - Panics if any stream is not found
 - Panics if any stream does not belong to `employer`
 - Panics if any stream is already Cancelled or Exhausted (reverts entire batch)
@@ -1339,7 +1450,7 @@ Emitted by `update_rate` when the employer changes the stream's `rate_per_second
 
 ### `low_balance`
 
-Emitted by `withdraw` when the stream's remaining deposit (`deposit - withdrawn`) falls below its non-zero `low_balance_threshold`. Off-chain systems can subscribe to this event to alert the employer to top up. The threshold is set via `create_stream` and can be changed via `top_up`.
+Emitted by `withdraw` when the stream's remaining deposit (`deposit - withdrawn`) falls below its non-zero `low_balance_threshold`. Off-chain systems can subscribe to this event to alert the employer to top up. The threshold is set via `create_stream` and can be changed via `top_up` or `set_low_balance_threshold`.
 
 | Field | Type | Description |
 |---|---|---|
@@ -1350,6 +1461,21 @@ Emitted by `withdraw` when the stream's remaining deposit (`deposit - withdrawn`
 
 **Topics:** `("low_bal", stream_id)`
 **Data:** `(employer, remaining, threshold)`
+
+---
+
+### `threshold_updated`
+
+Emitted by `set_low_balance_threshold` when the employer updates the low-balance alert threshold for a stream.
+
+| Field | Type | Description |
+|---|---|---|
+| `stream_id` | `u64` | ID of the updated stream (in topics) |
+| `old_threshold` | `i128` | Previous `low_balance_threshold` value |
+| `new_threshold` | `i128` | New `low_balance_threshold` value |
+
+**Topics:** `("thresh_up", stream_id)`
+**Data:** `(old_threshold, new_threshold)`
 
 ---
 
@@ -1364,11 +1490,12 @@ Keep this table in sync with that file (see [CONTRIBUTING.md](../CONTRIBUTING.md
 | E002 | `ERR_ZERO_DEPOSIT` | `deposit` / `amount` must be > 0 | `create_stream`, `create_streams_batch`, `set_min_deposit` | Pass a `deposit` / `amount` > 0 |
 | E003 | `ERR_REENTRANT` | Reentrant withdraw detected (stream `locked` flag set) | `withdraw`, `withdraw_all` | Do not re-enter `withdraw` from a token callback; retry in a separate transaction |
 | E004 | `ERR_OVERFLOW` | Arithmetic overflow in claimable / balance calculation | `claimable`, `claimable_at`, `withdraw`, `withdraw_all`, `top_up` | Use smaller `deposit`, `rate_per_second`, or top-up `amount` values |
-| E005 | `ERR_STREAM_CANCELLED` | Cannot top up a cancelled stream | `top_up` | Create a new stream instead |
-| E006 | `ERR_STREAM_EXHAUSTED` | Cannot top up an exhausted stream | `top_up` | Create a new stream instead |
+| E005 | `ERR_STREAM_CANCELLED` | Cannot top up a cancelled stream | `top_up`, `set_auto_topup`, `set_low_balance_threshold` | Create a new stream instead |
+| E006 | `ERR_STREAM_EXHAUSTED` | Cannot top up an exhausted stream | `top_up`, `set_low_balance_threshold` | Create a new stream instead |
 | E007 | `ERR_BELOW_MIN_DEPOSIT` | Deposit below minimum | `create_stream`, `create_streams_batch` | Deposit at least the minimum (default `10_000`, changed via `set_min_deposit`) |
 | E008 | `ERR_INVALID_RATE` | `rate_per_second` exceeds maximum (1,000,000,000) | `create_stream`, `create_streams_batch`, `update_rate` | Pass a rate ≤ 1,000,000,000 |
 | E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
+| E029 | `ERR_BATCH_TOO_LARGE` | Batch contains more than 50 streams | `create_streams_batch`, `cancel_streams_batch` | Split the operation into batches of at most 50 streams |
 | T001 | `ERR_OVERFLOW` (token) | Token arithmetic overflow | Token `mint`, `transfer`, `transfer_from` | Use smaller amounts |
 
 ---
@@ -1380,8 +1507,8 @@ Keep this table in sync with that file (see [CONTRIBUTING.md](../CONTRIBUTING.md
 ```mermaid
 stateDiagram-v2
     [*] --> Active: create_stream / create_streams_batch
-    Active --> Paused: pause_stream
-    Paused --> Active: resume_stream
+    Active --> Paused: pause_stream / pause_stream_batch
+    Paused --> Active: resume_stream / resume_stream_batch
     Active --> Cancelled: cancel_stream / cancel_streams_batch
     Paused --> Cancelled: cancel_stream / cancel_streams_batch
     Active --> Exhausted: withdraw / withdraw_all / settle_stream
@@ -1389,9 +1516,9 @@ stateDiagram-v2
     Exhausted --> [*]
 ```
 
-`update_rate` and `top_up` do not change a stream's status.
+`update_rate`, `top_up`, and `set_low_balance_threshold` do not change a stream's status.
 
-`settle_stream` (callable by anyone) pays any remaining claimable amount and triggers the
-Active → Exhausted transition once `stop_time` has been reached. Any unstreamed deposit left
-after the hard stop is not claimable. `withdraw` also transitions a stream to Exhausted when
-called after `stop_time` with nothing left to claim.
+`settle_stream` (callable by anyone) triggers the Active → Exhausted transition for streams
+whose `stop_time` has passed and whose deposit is fully streamed. `withdraw` performs the
+same transition automatically when called after `stop_time` with nothing left to claim.
+

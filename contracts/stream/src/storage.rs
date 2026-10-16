@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::types::{
-    DataKey, PendingUpgrade, Stream, StreamParams, StreamStatus, ERR_ADMIN_NOT_SET, ERR_BAD_NONCE,
+    AutoTopupConfig, DataKey, PendingUpgrade, Stream, StreamParams, StreamStatus, ERR_ADMIN_NOT_SET, ERR_BAD_NONCE,
     ERR_OVERFLOW,
 };
 use soroban_sdk::{Address, BytesN, Env, Vec};
@@ -249,35 +249,28 @@ pub fn get_employee_streams(env: &Env, employee: &Address) -> Vec<u64> {
     ids
 }
 
-/// Append `stream_id` to the index for streams funded with `token`.
-pub fn index_token_stream(env: &Env, token: &Address, stream_id: u64) {
-    let key = DataKey::TokenStreams(token.clone());
-    let mut ids: Vec<u64> = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .unwrap_or_else(|| Vec::new(env));
-    ids.push_back(stream_id);
-    env.storage().persistent().set(&key, &ids);
+pub fn get_auto_topup(env: &Env, stream_id: u64) -> Option<AutoTopupConfig> {
+    let key = DataKey::AutoTopup(stream_id);
+    let config: Option<AutoTopupConfig> = env.storage().persistent().get(&key);
+    if config.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+    }
+    config
+}
+
+pub fn set_auto_topup(env: &Env, stream_id: u64, config: &AutoTopupConfig) {
+    let key = DataKey::AutoTopup(stream_id);
+    env.storage().persistent().set(&key, config);
     env.storage()
         .persistent()
         .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
 }
 
-/// Return all stream IDs funded with `token` and extend the index TTL on read.
-pub fn get_token_streams(env: &Env, token: &Address) -> Vec<u64> {
-    let key = DataKey::TokenStreams(token.clone());
-    let ids: Vec<u64> = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .unwrap_or_else(|| Vec::new(env));
-    if env.storage().persistent().has(&key) {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
-    }
-    ids
+pub fn remove_auto_topup(env: &Env, stream_id: u64) {
+    let key = DataKey::AutoTopup(stream_id);
+    env.storage().persistent().remove(&key);
 }
 
 // ---------------------------------------------------------------------------
