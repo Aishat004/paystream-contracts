@@ -6,7 +6,7 @@ use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{Address, Env};
 
 use crate::storage;
-use crate::types::StreamStatus;
+use crate::types::{StreamParams, StreamStatus};
 use crate::{StreamContract, StreamContractClient};
 
 fn setup() -> (Env, StreamContractClient<'static>) {
@@ -22,6 +22,20 @@ fn setup_token(env: &Env, admin: &Address) -> Address {
     let token = paystream_token::TokenContractClient::new(env, &token_id);
     token.initialize(admin, &1_000_000_000);
     token_id
+}
+
+fn make_stream_params(env: &Env, token: &Address, count: u32) -> soroban_sdk::Vec<StreamParams> {
+    let mut params = soroban_sdk::Vec::new(env);
+    for _ in 0..count {
+        params.push_back(StreamParams {
+            employee: Address::generate(env),
+            token: token.clone(),
+            deposit: 100,
+            rate_per_second: 1,
+            stop_time: 0,
+        });
+    }
+    params
 }
 
 // ---------------------------------------------------------------------------
@@ -1642,6 +1656,238 @@ fn test_stream_status_not_found_panics() {
 // SC-03 – cancel_streams_batch
 // ---------------------------------------------------------------------------
 
+#[test]
+fn test_create_streams_batch_max_size_succeeds() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.set_min_deposit(&admin, &0, &100);
+    let params = make_stream_params(&env, &token_id, 50);
+
+    let ids = client.create_streams_batch(&employer, &params);
+    assert_eq!(ids.len(), 50);
+}
+
+#[test]
+#[should_panic(expected = "E029")]
+fn test_create_streams_batch_over_max_panics() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.set_min_deposit(&admin, &0, &100);
+    let params = make_stream_params(&env, &token_id, 51);
+
+    client.create_streams_batch(&employer, &params);
+}
+
+#[test]
+fn test_cancel_streams_batch_max_size_succeeds() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.set_min_deposit(&admin, &0, &100);
+    let params = make_stream_params(&env, &token_id, 50);
+    let ids = client.create_streams_batch(&employer, &params);
+
+    client.cancel_streams_batch(&employer, &ids);
+    assert_eq!(client.get_stream(&ids.get(0).unwrap()).status, StreamStatus::Cancelled);
+    assert_eq!(client.get_stream(&ids.get(49).unwrap()).status, StreamStatus::Cancelled);
+}
+
+#[test]
+#[should_panic(expected = "E029")]
+fn test_cancel_streams_batch_over_max_panics() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.set_min_deposit(&admin, &0, &100);
+    let params = make_stream_params(&env, &token_id, 50);
+    let mut ids = client.create_streams_batch(&employer, &params);
+    let employee = Address::generate(&env);
+    ids.push_back(client.create_stream(&employer, &employee, &token_id, &100, &1, &0, &None));
+
+    client.cancel_streams_batch(&employer, &ids);
+}
+
+#[test]
+fn test_pause_stream_batch_succeeds_and_emits_status_events() {
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::{symbol_short, vec, IntoVal};
+
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee1 = Address::generate(&env);
+    let employee2 = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id1 = client.create_stream(&employer, &employee1, &token_id, &100, &1, &0, &None);
+    let id2 = client.create_stream(&employer, &employee2, &token_id, &100, &1, &0, &None);
+    let mut ids = soroban_sdk::Vec::new(&env);
+    ids.push_back(id1);
+    ids.push_back(id2);
+
+    client.pause_stream_batch(&employer, &ids);
+
+    assert_eq!(client.get_stream(&id1).status, StreamStatus::Paused);
+    assert_eq!(client.get_stream(&id2).status, StreamStatus::Paused);
+    let events = env.events().all();
+    for id in [id1, id2] {
+        let status_topics = vec![
+            &env,
+            symbol_short!("v1").into_val(&env),
+            symbol_short!("status").into_val(&env),
+            id.into_val(&env),
+        ];
+        assert!(events
+            .iter()
+            .any(|(_, topics, _)| *topics == status_topics));
+    }
+}
+
+#[test]
+fn test_pause_stream_batch_failure_reverts_prior_changes() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee1 = Address::generate(&env);
+    let employee2 = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id1 = client.create_stream(&employer, &employee1, &token_id, &100, &1, &0, &None);
+    let id2 = client.create_stream(&employer, &employee2, &token_id, &100, &1, &0, &None);
+    client.pause_stream(&employer, &id2);
+
+    let mut ids = soroban_sdk::Vec::new(&env);
+    ids.push_back(id1);
+    ids.push_back(id2);
+    assert!(client.try_pause_stream_batch(&employer, &ids).is_err());
+
+    assert_eq!(client.get_stream(&id1).status, StreamStatus::Active);
+    assert_eq!(client.get_stream(&id2).status, StreamStatus::Paused);
+}
+
+#[test]
+#[should_panic(expected = "E029")]
+fn test_pause_stream_batch_over_max_panics() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &100, &1, &0, &None);
+    let mut ids = soroban_sdk::Vec::new(&env);
+    for _ in 0..51 {
+        ids.push_back(id);
+    }
+
+    client.pause_stream_batch(&employer, &ids);
+}
+
+#[test]
+fn test_resume_stream_batch_succeeds_and_emits_status_events() {
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::{symbol_short, vec, IntoVal};
+
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee1 = Address::generate(&env);
+    let employee2 = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id1 = client.create_stream(&employer, &employee1, &token_id, &100, &1, &0, &None);
+    let id2 = client.create_stream(&employer, &employee2, &token_id, &100, &1, &0, &None);
+    let mut ids = soroban_sdk::Vec::new(&env);
+    ids.push_back(id1);
+    ids.push_back(id2);
+    client.pause_stream_batch(&employer, &ids);
+
+    env.ledger().with_mut(|ledger| ledger.timestamp += 100);
+    let resumed_at = env.ledger().timestamp();
+    client.resume_stream_batch(&employer, &ids);
+
+    for id in [id1, id2] {
+        let stream = client.get_stream(&id);
+        assert_eq!(stream.status, StreamStatus::Active);
+        assert_eq!(stream.last_withdraw_time, resumed_at);
+    }
+
+    let events = env.events().all();
+    for id in [id1, id2] {
+        let status_topics = vec![
+            &env,
+            symbol_short!("v1").into_val(&env),
+            symbol_short!("status").into_val(&env),
+            id.into_val(&env),
+        ];
+        assert!(events
+            .iter()
+            .any(|(_, topics, data)| *topics == status_topics
+                && *data == StreamStatus::Active.into_val(&env)));
+    }
+}
+
+#[test]
+fn test_resume_stream_batch_failure_reverts_prior_changes() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee1 = Address::generate(&env);
+    let employee2 = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id1 = client.create_stream(&employer, &employee1, &token_id, &100, &1, &0, &None);
+    let id2 = client.create_stream(&employer, &employee2, &token_id, &100, &1, &0, &None);
+    client.pause_stream(&employer, &id1);
+
+    let mut ids = soroban_sdk::Vec::new(&env);
+    ids.push_back(id1);
+    ids.push_back(id2);
+    assert!(client.try_resume_stream_batch(&employer, &ids).is_err());
+
+    assert_eq!(client.get_stream(&id1).status, StreamStatus::Paused);
+    assert_eq!(client.get_stream(&id2).status, StreamStatus::Active);
+}
+
+#[test]
+#[should_panic(expected = "E029")]
+fn test_resume_stream_batch_over_max_panics() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &100, &1, &0, &None);
+    client.pause_stream(&employer, &id);
+    let mut ids = soroban_sdk::Vec::new(&env);
+    for _ in 0..51 {
+        ids.push_back(id);
+    }
+
+    client.resume_stream_batch(&employer, &ids);
+}
+
 /// Happy path: batch cancel two active streams atomically.
 #[test]
 fn test_cancel_streams_batch_happy_path() {
@@ -1787,10 +2033,12 @@ fn test_withdraw_transitions_to_exhausted_after_stop_time() {
     assert_eq!(client.get_stream(&id).status, StreamStatus::Exhausted);
 }
 
-/// settle_stream transitions an Active stream to Exhausted when stop_time has
-/// passed and no tokens remain claimable.
+/// settle_stream pays accrued tokens and emits the Exhausted status transition.
 #[test]
 fn test_settle_stream_transitions_to_exhausted() {
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::{symbol_short, vec, IntoVal};
+
     let (env, client) = setup();
     let admin = Address::generate(&env);
     let employer = Address::generate(&env);
@@ -1808,16 +2056,29 @@ fn test_settle_stream_transitions_to_exhausted() {
     // the stream (deposit 1_000 > withdrawn 500).
     let id = client.create_stream(&employer, &employee, &token_id, &1_000, &10, &stop);
 
-    // Employee withdraws all earned tokens up to stop_time
-    env.ledger().with_mut(|l| l.timestamp = stop);
-    client.withdraw(&employee, &id);
-
-    // Advance past stop_time — no more tokens can accrue; stream is still Active
-    env.ledger().with_mut(|l| l.timestamp += 10);
+    // Advance past stop_time with 500 tokens claimable.
+    env.ledger().with_mut(|l| l.timestamp = stop + 10);
 
     // Anyone can call settle_stream to push status to Exhausted
     client.settle_stream(&id);
-    assert_eq!(client.get_stream(&id).status, StreamStatus::Exhausted);
+    let stream = client.get_stream(&id);
+    assert_eq!(stream.status, StreamStatus::Exhausted);
+    assert_eq!(stream.withdrawn, 500);
+
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+    assert_eq!(token.balance(&employee), 500);
+
+    let status_topics = vec![
+        &env,
+        symbol_short!("v1").into_val(&env),
+        symbol_short!("status").into_val(&env),
+        id.into_val(&env),
+    ];
+    assert!(env
+        .events()
+        .all()
+        .iter()
+        .any(|(_, topics, _)| *topics == status_topics));
 }
 
 /// settle_stream must panic if stop_time has not yet been reached.
@@ -1838,10 +2099,10 @@ fn test_settle_stream_before_stop_time_panics() {
     client.settle_stream(&id);
 }
 
-/// settle_stream must panic if there are still claimable tokens.
+/// settle_stream must panic if the stream is not Active.
 #[test]
-#[should_panic(expected = "stream still has claimable tokens")]
-fn test_settle_stream_with_claimable_tokens_panics() {
+#[should_panic(expected = "stream not active")]
+fn test_settle_stream_inactive_stream_panics() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
     let employer = Address::generate(&env);
@@ -1849,16 +2110,34 @@ fn test_settle_stream_with_claimable_tokens_panics() {
     let token_id = setup_token(&env, &employer);
 
     client.initialize(&admin);
-    client.set_min_deposit(&admin, &0, &100);
-
-    let now = env.ledger().timestamp();
-    let stop = now + 50;
-    // Deposit more than stop_time * rate_per_second → tokens remain after stop
-    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &stop, &None);
-
-    env.ledger().with_mut(|l| l.timestamp += 100);
-    // Still has 500 claimable tokens (10/s * 50s) — must panic
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None);
+    client.cancel_stream(&employer, &id);
     client.settle_stream(&id);
+}
+
+/// settle_stream must panic if stop_time is unset.
+#[test]
+#[should_panic(expected = "stop_time not reached")]
+fn test_settle_stream_without_stop_time_panics() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None);
+    client.settle_stream(&id);
+}
+
+/// settle_stream must panic if the stream does not exist.
+#[test]
+#[should_panic(expected = "stream not found")]
+fn test_settle_stream_missing_stream_panics() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    client.settle_stream(&999);
 }
 
 // ---------------------------------------------------------------------------

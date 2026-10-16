@@ -119,6 +119,7 @@ pub enum DataKey {
 /// | E023 | ERR_AMOUNT_NOT_POSITIVE | Amount must be positive                            |
 /// | E025 | ERR_INVALID_AUTO_TOPUP  | Invalid auto top-up parameters                     |
 /// | E026 | ERR_NO_AUTO_TOPUP       | No auto top-up configured for the stream           |
+/// | E029 | ERR_BATCH_TOO_LARGE     | Batch contains more than 50 streams                |
 pub const ERR_ZERO_RATE: &str = "E001: rate_per_second must be greater than zero";
 pub const ERR_ZERO_DEPOSIT: &str = "E002: deposit must be positive";
 pub const ERR_REENTRANT: &str = "E003: reentrant withdraw detected";
@@ -151,3 +152,5 @@ pub const ERR_DRAIN_NOT_PAUSED: &str = "E026: contract must be paused before eme
 pub const ERR_NO_PENDING_DRAIN: &str = "E027: no pending emergency drain proposal";
 /// E028: new_employer must differ from the stream's employee.
 pub const ERR_NEW_EMPLOYER_IS_EMPLOYEE: &str = "E028: new_employer must differ from the stream employee";
+pub const ERR_BATCH_TOO_LARGE: &str = "E029: batch exceeds the maximum of 50 streams";
+pub const MAX_BATCH_SIZE: u32 = 50;

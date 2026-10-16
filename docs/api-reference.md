@@ -222,7 +222,9 @@ Employer creates multiple salary streams atomically. All streams succeed or all 
 
 **Returns:** `Vec<u64>` — list of new stream IDs in the same order as `params`
 
-**Errors:** Same per-stream validations as `create_stream`; panics if `params` is empty
+**Limit:** 50 streams per call
+
+**Errors:** Same per-stream validations as `create_stream`; panics if `params` is empty or contains more than 50 entries (E029)
 
 **Example:**
 ```bash
@@ -258,6 +260,30 @@ Employee withdraws all claimable tokens earned so far.
 ```bash
 stellar contract invoke --id <STREAM_ID> --source <EMPLOYEE_KEY> --network testnet \
   -- withdraw --employee <EMPLOYEE_ADDRESS> --stream_id 1
+```
+
+---
+
+### `settle_stream`
+
+Anyone may finalize an Active stream after its `stop_time` is reached. Any remaining
+claimable tokens are transferred to the current stream receipt holder, then the
+stream transitions to `Exhausted` and emits a `status` event. No caller authorization
+is required.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `stream_id` | `u64` | ID of the stream to settle |
+
+**Errors:**
+- Panics if the stream is not found
+- Panics if the stream is not Active
+- Panics if `stop_time` is unset or has not been reached
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <KEEPER_KEY> --network testnet \
+  -- settle_stream --stream_id 1
 ```
 
 ---
@@ -395,6 +421,33 @@ stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testn
 
 ---
 
+### `pause_stream_batch`
+
+Employer pauses multiple Active streams atomically. The call reverts entirely if
+any stream is missing, belongs to another employer, or is not Active. A `status`
+event is emitted for each stream on success.
+
+**Caller:** Employer
+
+| Parameter | Type | Description |
+|---|---|---|
+| `employer` | `Address` | Must own every stream (requires auth once) |
+| `stream_ids` | `Vec<u64>` | IDs of 1–50 streams to pause |
+
+**Returns:** nothing
+
+**Errors:**
+- Panics if `stream_ids` is empty or contains more than 50 entries (E029)
+- Panics if any stream is not found, does not belong to `employer`, or is not Active
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testnet \
+  -- pause_stream_batch --employer <EMPLOYER_ADDRESS> --stream_ids '[1,2,3]'
+```
+
+---
+
 ### `resume_stream`
 
 Employer resumes a paused stream. The `last_withdraw_time` is reset to now so paused time is excluded from accrual.
@@ -417,6 +470,34 @@ Employer resumes a paused stream. The `last_withdraw_time` is reset to now so pa
 ```bash
 stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testnet \
   -- resume_stream --employer <EMPLOYER_ADDRESS> --stream_id 1
+```
+
+---
+
+### `resume_stream_batch`
+
+Employer resumes multiple Paused streams atomically. The call reverts entirely if
+any stream is missing, belongs to another employer, or is not Paused. Each
+stream's accrual clock restarts at the current ledger timestamp, and a `status`
+event is emitted for each stream.
+
+**Caller:** Employer
+
+| Parameter | Type | Description |
+|---|---|---|
+| `employer` | `Address` | Must own every stream (requires auth once) |
+| `stream_ids` | `Vec<u64>` | IDs of 1–50 streams to resume |
+
+**Returns:** nothing
+
+**Errors:**
+- Panics if `stream_ids` is empty or contains more than 50 entries (E029)
+- Panics if any stream is not found, does not belong to `employer`, or is not Paused
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testnet \
+  -- resume_stream_batch --employer <EMPLOYER_ADDRESS> --stream_ids '[1,2,3]'
 ```
 
 ---
@@ -491,12 +572,13 @@ Employer cancels multiple streams atomically in a single transaction. All cancel
 | Parameter | Type | Description |
 |---|---|---|
 | `employer` | `Address` | Must own every stream in the list (requires auth once) |
-| `stream_ids` | `Vec<u64>` | IDs of streams to cancel; must not be empty |
+| `stream_ids` | `Vec<u64>` | IDs of 1–50 streams to cancel |
 
 **Returns:** nothing
 
 **Errors:**
 - Panics if `stream_ids` is empty
+- Panics with E029 if `stream_ids` contains more than 50 entries
 - Panics if any stream is not found
 - Panics if any stream does not belong to `employer`
 - Panics if any stream is already Cancelled or Exhausted (reverts entire batch)
@@ -1273,6 +1355,7 @@ Keep this table in sync with that file (see [CONTRIBUTING.md](../CONTRIBUTING.md
 | E007 | `ERR_BELOW_MIN_DEPOSIT` | Deposit below minimum | `create_stream`, `create_streams_batch` | Deposit at least the minimum (default `10_000`, changed via `set_min_deposit`) |
 | E008 | `ERR_INVALID_RATE` | `rate_per_second` exceeds maximum (1,000,000,000) | `create_stream`, `create_streams_batch`, `update_rate` | Pass a rate ≤ 1,000,000,000 |
 | E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
+| E029 | `ERR_BATCH_TOO_LARGE` | Batch contains more than 50 streams | `create_streams_batch`, `cancel_streams_batch` | Split the operation into batches of at most 50 streams |
 | T001 | `ERR_OVERFLOW` (token) | Token arithmetic overflow | Token `mint`, `transfer`, `transfer_from` | Use smaller amounts |
 
 ---
