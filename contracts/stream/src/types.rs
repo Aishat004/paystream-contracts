@@ -57,12 +57,24 @@ pub struct StreamParams {
     pub stop_time: u64,
 }
 
+/// Configuration for recurring stream auto top-up.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AutoTopupConfig {
+    pub trigger_threshold: i128,
+    pub topup_amount: i128,
+    pub max_total: i128,
+    pub total_topped_up: i128,
+}
+
 /// Storage keys.
 #[contracttype]
 pub enum DataKey {
     Stream(u64),
     StreamCount,
     Admin,
+    /// Auto top-up configuration for a stream: stream ID → AutoTopupConfig.
+    AutoTopup(u64),
     /// Minimum deposit enforced on create_stream.
     MinDeposit,
     /// Monotonically-increasing nonce for admin operations (replay protection).
@@ -151,3 +163,7 @@ pub const ERR_DRAIN_NOT_PAUSED: &str = "E026: contract must be paused before eme
 pub const ERR_NO_PENDING_DRAIN: &str = "E027: no pending emergency drain proposal";
 /// E028: new_employer must differ from the stream's employee.
 pub const ERR_NEW_EMPLOYER_IS_EMPLOYEE: &str = "E028: new_employer must differ from the stream employee";
+/// E025: invalid auto top-up parameters.
+pub const ERR_INVALID_AUTO_TOPUP: &str = "E025: invalid auto top-up parameters";
+/// E026: no auto top-up configured for the stream.
+pub const ERR_NO_AUTO_TOPUP: &str = "E026: no auto top-up configured for stream";

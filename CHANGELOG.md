@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SC-06: `stream_status(stream_id) -> StreamStatus` — lightweight view that returns only
   the stream status without loading the full `Stream` struct into the caller's response.
   Reduces resource consumption for read-heavy off-chain indexers polling many streams.
+- SC-31: `pause_stream_batch(employer, stream_ids)` — bulk pause entry point allowing employers
+  to pause up to 50 active streams atomically in a single transaction. Emits status events on success
+  and reverts atomically if any stream in the batch fails.
+- SC-32: `resume_stream_batch(employer, stream_ids)` — bulk resume entry point allowing employers
+  to resume up to 50 paused streams atomically in a single transaction, restarting accrual and resetting
+  last_withdraw_time for each stream. Emits status events on success and reverts atomically if any stream is not Paused.
+- SC-34: `get_auto_topup_config(stream_id) -> Option<AutoTopupConfig>` — public read-only query function
+  for retrieving recurring auto top-up configuration for off-chain dashboards and indexers.
+- `set_low_balance_threshold(employer, stream_id, threshold)` — allows employers to update or disable (`threshold = 0`) the low-balance alert threshold at any time without topping up. Emits `threshold_updated` event.
 
 ## [0.1.0] - 2026-04-24
 

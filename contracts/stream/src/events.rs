@@ -86,3 +86,34 @@ pub fn stream_transferred(env: &Env, stream_id: u64, old_employer: &Address, new
         (old_employer.clone(), new_employer.clone()),
     );
 }
+
+pub fn auto_topup_set(env: &Env, stream_id: u64, enabled: bool) {
+    env.events().publish(
+        (symbol_short!("v1"), symbol_short!("at_set"), stream_id),
+        enabled,
+    );
+}
+
+pub fn auto_topped_up(env: &Env, stream_id: u64, amount: i128, total_topped_up: i128) {
+    env.events().publish(
+        (symbol_short!("v1"), symbol_short!("at_up"), stream_id),
+        (amount, total_topped_up),
+    );
+}
+
+/// Emitted by `withdraw` when remaining stream deposit falls below the low balance threshold.
+pub fn low_balance(env: &Env, id: u64, employer: &Address, remaining: i128, threshold: i128) {
+    env.events().publish(
+        (symbol_short!("low_bal"), id),
+        (employer.clone(), remaining, threshold),
+    );
+}
+
+/// Emitted when `set_low_balance_threshold` updates the stream's alert threshold.
+pub fn threshold_updated(env: &Env, stream_id: u64, old_threshold: i128, new_threshold: i128) {
+    env.events().publish(
+        (symbol_short!("v1"), symbol_short!("thresh_up"), stream_id),
+        (old_threshold, new_threshold),
+    );
+}
+
