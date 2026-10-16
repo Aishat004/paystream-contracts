@@ -262,6 +262,35 @@ stellar contract invoke --id <STREAM_ID> --source <EMPLOYEE_KEY> --network testn
 
 ---
 
+### `settle_stream`
+
+Finalize an Active stream after its configured `stop_time` has been reached. Anyone may call this; no employee authorization is required. Any claimable tokens are paid to the current stream receipt holder, and the stream transitions to `Exhausted`. Any unstreamed deposit remaining after `stop_time` is not claimable.
+
+**Caller:** Anyone
+
+| Parameter | Type | Description |
+|---|---|---|
+| `stream_id` | `u64` | ID of the stream to settle |
+
+**Returns:** nothing
+
+**Events:** Emits `withdraw` if tokens are paid, followed by the generic `status` event with `Exhausted`.
+
+**Errors:**
+- Panics if stream not found
+- Panics if stream is not Active
+- Panics if `stop_time` is zero or has not been reached
+- E003 if a reentrant settlement is detected
+- E004 if claimable amount arithmetic overflows
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <KEEPER_KEY> --network testnet \
+  -- settle_stream --stream_id 1
+```
+
+---
+
 ### `withdraw_all`
 
 Employee withdraws all claimable tokens from every stream they receive in a single transaction. Auth is checked once. Cancelled and Paused streams are silently skipped; streams with nothing claimable are also skipped.
@@ -671,6 +700,30 @@ status == Exhausted  → claimable = 0
 
 ---
 
+### `claimable_batch`
+
+Query claimable amounts for up to 50 streams in one contract call. Missing stream IDs return 0; all other results use the same calculation as `claimable` and preserve input order.
+
+**Caller:** Anyone
+
+| Parameter | Type | Description |
+|---|---|---|
+| `stream_ids` | `Vec<u64>` | Stream IDs to query (maximum 50) |
+
+**Returns:** `Vec<i128>` — claimable amounts in the same order as `stream_ids`
+
+**Errors:**
+- Panics if `stream_ids` has more than 50 entries
+- E004 if claimable amount arithmetic overflows
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
+  -- claimable_batch --stream_ids '[1, 2, 3]'
+```
+
+---
+
 ### `claimable_at`
 
 Query how many tokens would be claimable at an arbitrary timestamp.
@@ -751,6 +804,29 @@ stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
 
 ---
 
+### `streams_by_employee_paginated`
+
+Return a page of stream IDs paying an employee, in creation order. The requested limit is capped at 50; an offset at or beyond the total stream count returns an empty vector.
+
+**Caller:** Anyone
+
+| Parameter | Type | Description |
+|---|---|---|
+| `employee` | `Address` | Employee address to query |
+| `offset` | `u32` | Number of stream IDs to skip |
+| `limit` | `u32` | Maximum number of IDs to return (capped at 50) |
+
+**Returns:** `Vec<u64>` — stream ID page
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
+  -- streams_by_employee_paginated \
+  --employee <EMPLOYEE_ADDRESS> --offset 0 --limit 20
+```
+
+---
+
 ### `stream_count_by_employer`
 
 Return the number of streams owned by an employer. Equivalent to `streams_by_employer(employer).len()` but avoids loading the full ID vector — useful for pagination and dashboards.
@@ -787,6 +863,26 @@ Return the number of streams paying an employee. Equivalent to `streams_by_emplo
 ```bash
 stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
   -- stream_count_by_employee --employee <EMPLOYEE_ADDRESS>
+```
+
+---
+
+### `stream_count_by_token`
+
+Return the number of streams funded with a token. The count is maintained in an on-chain token index, so callers do not need to scan all streams.
+
+**Caller:** Anyone
+
+| Parameter | Type | Description |
+|---|---|---|
+| `token` | `Address` | Token contract address to query |
+
+**Returns:** `u64` — stream count; 0 if no streams use the token
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
+  -- stream_count_by_token --token <TOKEN_ADDRESS>
 ```
 
 ---
@@ -1295,6 +1391,7 @@ stateDiagram-v2
 
 `update_rate` and `top_up` do not change a stream's status.
 
-`settle_stream` (callable by anyone) triggers the Active → Exhausted transition for streams
-whose `stop_time` has passed and whose deposit is fully streamed. `withdraw` performs the
-same transition automatically when called after `stop_time` with nothing left to claim.
+`settle_stream` (callable by anyone) pays any remaining claimable amount and triggers the
+Active → Exhausted transition once `stop_time` has been reached. Any unstreamed deposit left
+after the hard stop is not claimable. `withdraw` also transitions a stream to Exhausted when
+called after `stop_time` with nothing left to claim.

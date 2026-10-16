@@ -92,6 +92,88 @@ fn test_claimable_increases_with_time() {
 }
 
 #[test]
+fn test_claimable_batch_mixed_statuses_preserves_order() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let active_employee = Address::generate(&env);
+    let paused_employee = Address::generate(&env);
+    let exhausted_employee = Address::generate(&env);
+    let cancelled_employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.set_min_deposit(&admin, &0, &100);
+    let active_id = client.create_stream(
+        &employer,
+        &active_employee,
+        &token_id,
+        &10_000,
+        &10,
+        &0,
+        &None,
+    );
+    let paused_id = client.create_stream(
+        &employer,
+        &paused_employee,
+        &token_id,
+        &10_000,
+        &10,
+        &0,
+        &None,
+    );
+    let exhausted_id = client.create_stream(
+        &employer,
+        &exhausted_employee,
+        &token_id,
+        &500,
+        &10,
+        &0,
+        &None,
+    );
+    let cancelled_id = client.create_stream(
+        &employer,
+        &cancelled_employee,
+        &token_id,
+        &10_000,
+        &10,
+        &0,
+        &None,
+    );
+
+    client.pause_stream(&employer, &paused_id);
+    env.ledger().with_mut(|l| l.timestamp += 100);
+    client.withdraw(&exhausted_employee, &exhausted_id);
+    client.cancel_stream(&employer, &cancelled_id);
+
+    let mut ids = soroban_sdk::Vec::new(&env);
+    ids.push_back(cancelled_id);
+    ids.push_back(paused_id);
+    ids.push_back(999);
+    ids.push_back(active_id);
+    ids.push_back(exhausted_id);
+
+    let amounts = client.claimable_batch(&ids);
+    assert_eq!(amounts.len(), 5);
+    assert_eq!(amounts.get(0).unwrap(), 0);
+    assert_eq!(amounts.get(1).unwrap(), 1000);
+    assert_eq!(amounts.get(2).unwrap(), 0);
+    assert_eq!(amounts.get(3).unwrap(), 1000);
+    assert_eq!(amounts.get(4).unwrap(), 0);
+}
+
+#[test]
+#[should_panic(expected = "stream_ids length exceeds 50")]
+fn test_claimable_batch_rejects_more_than_50_stream_ids() {
+    let (env, client) = setup();
+    let mut ids = soroban_sdk::Vec::new(&env);
+    for id in 0..51 {
+        ids.push_back(id);
+    }
+    client.claimable_batch(&ids);
+}
+
+#[test]
 fn test_withdraw() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
@@ -1563,6 +1645,111 @@ fn test_stream_count_by_employee_matches_list_length() {
     assert_eq!(count, 2);
 }
 
+#[test]
+fn test_streams_by_employee_paginated_pages_and_bounds() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    for _ in 0..4 {
+        client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None);
+    }
+
+    let first_page = client.streams_by_employee_paginated(&employee, &0, &2);
+    assert_eq!(first_page.len(), 2);
+    assert_eq!(first_page.get(0).unwrap(), 1);
+    assert_eq!(first_page.get(1).unwrap(), 2);
+
+    let last_page = client.streams_by_employee_paginated(&employee, &3, &2);
+    assert_eq!(last_page.len(), 1);
+    assert_eq!(last_page.get(0).unwrap(), 4);
+
+    let beyond_end = client.streams_by_employee_paginated(&employee, &5, &2);
+    assert!(beyond_end.is_empty());
+}
+
+#[test]
+fn test_streams_by_employee_paginated_caps_limit_at_50() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    for _ in 0..51 {
+        client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None);
+    }
+
+    let page = client.streams_by_employee_paginated(&employee, &0, &100);
+    assert_eq!(page.len(), 50);
+    assert_eq!(page.get(49).unwrap(), 50);
+}
+
+/// stream_count_by_token returns 0 for a token with no streams.
+#[test]
+fn test_stream_count_by_token_unknown_token_returns_zero() {
+    let (env, client) = setup();
+    let token = Address::generate(&env);
+    assert_eq!(client.stream_count_by_token(&token), 0);
+}
+
+/// stream_count_by_token includes streams created through create_stream.
+#[test]
+fn test_stream_count_by_token_single_stream() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None);
+
+    assert_eq!(client.stream_count_by_token(&token_id), 1);
+}
+
+/// Token indexes include single and batch-created streams without mixing tokens.
+#[test]
+fn test_stream_count_by_token_multiple_tokens_and_batch() {
+    use crate::types::StreamParams;
+
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee1 = Address::generate(&env);
+    let employee2 = Address::generate(&env);
+    let employee3 = Address::generate(&env);
+    let token_a = setup_token(&env, &employer);
+    let token_b = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.create_stream(&employer, &employee1, &token_a, &10_000, &10, &0, &None);
+
+    let mut params = soroban_sdk::Vec::new(&env);
+    params.push_back(StreamParams {
+        employee: employee2,
+        token: token_a.clone(),
+        deposit: 10_000,
+        rate_per_second: 10,
+        stop_time: 0,
+    });
+    params.push_back(StreamParams {
+        employee: employee3,
+        token: token_b.clone(),
+        deposit: 10_000,
+        rate_per_second: 10,
+        stop_time: 0,
+    });
+    client.create_streams_batch(&employer, &params);
+
+    assert_eq!(client.stream_count_by_token(&token_a), 2);
+    assert_eq!(client.stream_count_by_token(&token_b), 1);
+}
+
 // ---------------------------------------------------------------------------
 // SC-06 – stream_status lightweight query
 // ---------------------------------------------------------------------------
@@ -1787,10 +1974,13 @@ fn test_withdraw_transitions_to_exhausted_after_stop_time() {
     assert_eq!(client.get_stream(&id).status, StreamStatus::Exhausted);
 }
 
-/// settle_stream transitions an Active stream to Exhausted when stop_time has
-/// passed and no tokens remain claimable.
+/// settle_stream pays accrued tokens to the receipt holder and transitions the
+/// stream to Exhausted without requiring employee auth.
 #[test]
-fn test_settle_stream_transitions_to_exhausted() {
+fn test_settle_stream_pays_claimable_and_transitions_to_exhausted() {
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::{symbol_short, Val, Vec as SdkVec};
+
     let (env, client) = setup();
     let admin = Address::generate(&env);
     let employer = Address::generate(&env);
@@ -1802,22 +1992,27 @@ fn test_settle_stream_transitions_to_exhausted() {
 
     let now = env.ledger().timestamp();
     let stop = now + 50;
-    // Stream: 1_000 tokens, 10/s, 50-second window.
-    // Total streamable = 500 tokens; 500 remain as "unclaimable" after stop_time.
-    // withdraw at stop_time claims the 500 earned tokens but does NOT exhaust
-    // the stream (deposit 1_000 > withdrawn 500).
-    let id = client.create_stream(&employer, &employee, &token_id, &1_000, &10, &stop);
+    let id = client.create_stream(&employer, &employee, &token_id, &1_000, &10, &stop, &None);
 
-    // Employee withdraws all earned tokens up to stop_time
-    env.ledger().with_mut(|l| l.timestamp = stop);
-    client.withdraw(&employee, &id);
-
-    // Advance past stop_time — no more tokens can accrue; stream is still Active
-    env.ledger().with_mut(|l| l.timestamp += 10);
-
-    // Anyone can call settle_stream to push status to Exhausted
+    env.ledger().with_mut(|l| l.timestamp = stop + 10);
     client.settle_stream(&id);
-    assert_eq!(client.get_stream(&id).status, StreamStatus::Exhausted);
+
+    let stream = client.get_stream(&id);
+    assert_eq!(stream.status, StreamStatus::Exhausted);
+    assert_eq!(stream.withdrawn, 500);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+    assert_eq!(token.balance(&employee), 500);
+
+    let events = env.events().all();
+    let status_event = events.iter().find(|(_, topics, _): &(_, SdkVec<Val>, Val)| {
+        use soroban_sdk::TryIntoVal;
+        topics
+            .get(1)
+            .and_then(|topic| topic.try_into_val(&env).ok())
+            .map(|symbol: soroban_sdk::Symbol| symbol == symbol_short!("status"))
+            .unwrap_or(false)
+    });
+    assert!(status_event.is_some(), "no status event emitted");
 }
 
 /// settle_stream must panic if stop_time has not yet been reached.
@@ -1838,10 +2033,10 @@ fn test_settle_stream_before_stop_time_panics() {
     client.settle_stream(&id);
 }
 
-/// settle_stream must panic if there are still claimable tokens.
+/// settle_stream must panic if the stream is not Active.
 #[test]
-#[should_panic(expected = "stream still has claimable tokens")]
-fn test_settle_stream_with_claimable_tokens_panics() {
+#[should_panic(expected = "stream not active")]
+fn test_settle_stream_non_active_stream_panics() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
     let employer = Address::generate(&env);
@@ -1849,15 +2044,34 @@ fn test_settle_stream_with_claimable_tokens_panics() {
     let token_id = setup_token(&env, &employer);
 
     client.initialize(&admin);
-    client.set_min_deposit(&admin, &0, &100);
-
-    let now = env.ledger().timestamp();
-    let stop = now + 50;
-    // Deposit more than stop_time * rate_per_second → tokens remain after stop
+    let stop = env.ledger().timestamp() + 50;
     let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &stop, &None);
+    client.pause_stream(&employer, &id);
+    env.ledger().with_mut(|l| l.timestamp = stop + 1);
+    client.settle_stream(&id);
+}
 
+/// settle_stream must panic if the stream does not exist.
+#[test]
+#[should_panic(expected = "E015")]
+fn test_settle_stream_missing_stream_panics() {
+    let (_env, client) = setup();
+    client.settle_stream(&999);
+}
+
+/// settle_stream must panic if stop_time is zero.
+#[test]
+#[should_panic(expected = "stop_time not reached")]
+fn test_settle_stream_without_stop_time_panics() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None);
     env.ledger().with_mut(|l| l.timestamp += 100);
-    // Still has 500 claimable tokens (10/s * 50s) — must panic
     client.settle_stream(&id);
 }
 
