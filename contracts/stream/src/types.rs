@@ -57,12 +57,24 @@ pub struct StreamParams {
     pub stop_time: u64,
 }
 
+/// Configuration for recurring stream auto top-up.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AutoTopupConfig {
+    pub trigger_threshold: i128,
+    pub topup_amount: i128,
+    pub max_total: i128,
+    pub total_topped_up: i128,
+}
+
 /// Storage keys.
 #[contracttype]
 pub enum DataKey {
     Stream(u64),
     StreamCount,
     Admin,
+    /// Auto top-up configuration for a stream: stream ID → AutoTopupConfig.
+    AutoTopup(u64),
     /// Minimum deposit enforced on create_stream.
     MinDeposit,
     /// Monotonically-increasing nonce for admin operations (replay protection).

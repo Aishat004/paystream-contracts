@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::types::{
-    DataKey, PendingUpgrade, Stream, StreamParams, StreamStatus, ERR_ADMIN_NOT_SET, ERR_BAD_NONCE,
+    AutoTopupConfig, DataKey, PendingUpgrade, Stream, StreamParams, StreamStatus, ERR_ADMIN_NOT_SET, ERR_BAD_NONCE,
     ERR_OVERFLOW,
 };
 use soroban_sdk::{Address, BytesN, Env, Vec};
@@ -247,6 +247,30 @@ pub fn get_employee_streams(env: &Env, employee: &Address) -> Vec<u64> {
             .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
     }
     ids
+}
+
+pub fn get_auto_topup(env: &Env, stream_id: u64) -> Option<AutoTopupConfig> {
+    let key = DataKey::AutoTopup(stream_id);
+    let config: Option<AutoTopupConfig> = env.storage().persistent().get(&key);
+    if config.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+    }
+    config
+}
+
+pub fn set_auto_topup(env: &Env, stream_id: u64, config: &AutoTopupConfig) {
+    let key = DataKey::AutoTopup(stream_id);
+    env.storage().persistent().set(&key, config);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+}
+
+pub fn remove_auto_topup(env: &Env, stream_id: u64) {
+    let key = DataKey::AutoTopup(stream_id);
+    env.storage().persistent().remove(&key);
 }
 
 // ---------------------------------------------------------------------------

@@ -39,7 +39,7 @@ flowchart LR
     TC[TokenContract<br/>SEP-41 / SAC]
 
     Admin -->|"initialize, propose_admin / accept_admin,<br/>pause_contract / unpause_contract,<br/>set_min_deposit, upgrade, migrate"| SC
-    Employer -->|"create_stream, create_streams_batch, top_up,<br/>pause_stream, resume_stream, update_rate,<br/>cancel_stream, cancel_streams_batch"| SC
+    Employer -->|"create_stream, create_streams_batch, top_up,<br/>pause_stream, pause_stream_batch, resume_stream, resume_stream_batch, update_rate,<br/>cancel_stream, cancel_streams_batch"| SC
     Employee -->|"withdraw, withdraw_all"| SC
     SC -->|"transfer"| TC
 
@@ -55,8 +55,8 @@ Anyone can call the read-only functions (`get_stream`, `claimable`, `stream_stat
 ```mermaid
 stateDiagram-v2
     [*] --> Active: create_stream
-    Active --> Paused: pause_stream
-    Paused --> Active: resume_stream
+    Active --> Paused: pause_stream / pause_stream_batch
+    Paused --> Active: resume_stream / resume_stream_batch
     Active --> Cancelled: cancel_stream
     Paused --> Cancelled: cancel_stream
     Active --> Exhausted: withdraw / settle_stream (deposit fully paid or stop_time passed)
@@ -170,12 +170,16 @@ The `cargo-cache` volume persists the Cargo registry between runs so subsequent 
 | `withdraw(employee, stream_id)` | Employee | Withdraw all claimable earnings |
 | `withdraw_all(employee)` | Employee | Withdraw from all streams in one transaction |
 | `top_up(employer, stream_id, amount, low_balance_threshold)` | Employer | Add more funds to active stream; optionally update `low_bal` threshold |
+| `set_low_balance_threshold(employer, stream_id, threshold)` | Employer | Adjust or disable (`0`) alert threshold without topping up |
 | `pause_stream(employer, stream_id)` | Employer | Pause accrual |
+| `pause_stream_batch(employer, stream_ids)` | Employer | Pause multiple streams atomically; all succeed or all revert (max 50) |
 | `resume_stream(employer, stream_id)` | Employer | Resume accrual |
+| `resume_stream_batch(employer, stream_ids)` | Employer | Resume multiple paused streams atomically; all succeed or all revert (max 50) |
 | `cancel_stream(employer, stream_id)` | Employer | Pay employee earned share, refund remainder |
 | `cancel_streams_batch(employer, stream_ids)` | Employer | Cancel multiple streams atomically; all succeed or all revert |
 | `get_stream(stream_id)` | Anyone | Read stream state |
 | `get_streams_batch(stream_ids)` | Anyone | Read up to 50 streams in one call, in input order |
+| `get_auto_topup_config(stream_id)` | Anyone | Query recurring auto top-up config for a stream |
 | `stream_status(stream_id)` | Anyone | Query stream status only (lightweight) |
 | `claimable(stream_id)` | Anyone | Query withdrawable amount right now |
 | `stream_count()` | Anyone | Total streams created |
